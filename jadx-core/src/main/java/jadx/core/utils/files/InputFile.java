@@ -40,7 +40,7 @@ public class InputFile {
 		if (fileName.endsWith(".class")) {
 			return loadFromClassFile(file);
 		}
-		if (fileName.endsWith(".apk")) {
+		if (fileName.endsWith(".apk") || fileName.endsWith(".zip")) {
 			Dex dex = loadFromZip(file);
 			if (dex == null) {
 				throw new IOException("File 'classes.dex' not found in file: " + file);
@@ -72,6 +72,31 @@ public class InputFile {
 		} catch (Throwable e) {
 			throw new DecodeException("java class to dex conversion error:\n " + e.getMessage(), e);
 		}
+	}
+
+	public static byte[] loadXMLBuffer(File file) throws IOException { // FIXME: Public.. Please fix
+		ZipFile zf = new ZipFile(file);
+		ZipEntry xml = zf.getEntry("AndroidManifest.xml");
+		if (xml == null) {
+			zf.close();
+			return null;
+		}
+		ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
+		InputStream in = null;
+		try {
+			in = zf.getInputStream(xml);
+			byte[] buffer = new byte[(int) xml.getSize()]; // FIXME: long->int conversion loss
+			int count;
+			while ((count = in.read(buffer)) != -1) {
+				bytesOut.write(buffer, 0, count);
+			}
+		} finally {
+			if (null != in) {
+				in.close();
+			}
+			zf.close();
+		}
+		return bytesOut.toByteArray();
 	}
 
 	private static Dex loadFromZip(File file) throws IOException {

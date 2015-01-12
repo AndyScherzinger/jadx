@@ -32,6 +32,8 @@ import jadx.core.utils.exceptions.JadxOverflowException;
 
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -653,38 +655,78 @@ public class RegionMaker {
 			assert c != null;
 			blocksMap.put(c, entry.getValue());
 		}
-
-		BitSet succ = BlockUtils.blocksToBitSet(mth, block.getSuccessors());
-		BitSet domsOn = BlockUtils.blocksToBitSet(mth, block.getDominatesOn());
-		domsOn.xor(succ); // filter 'out' block
-
 		BlockNode defCase = getBlockByOffset(insn.getDefaultCaseOffset(), block.getSuccessors());
 		if (defCase != null) {
 			blocksMap.remove(defCase);
 		}
+		LoopInfo loop = mth.getLoopForBlock(block);
 
-		int outCount = domsOn.cardinality();
-		if (outCount > 1) {
-			// remove exception handlers
-			BlockUtils.cleanBitSet(mth, domsOn);
-			outCount = domsOn.cardinality();
-		}
-		if (outCount > 1) {
-			// filter successors of other blocks
-			List<BlockNode> blocks = mth.getBasicBlocks();
-			for (int i = domsOn.nextSetBit(0); i >= 0; i = domsOn.nextSetBit(i + 1)) {
-				BlockNode b = blocks.get(i);
-				for (BlockNode s : b.getCleanSuccessors()) {
-					domsOn.clear(s.getId());
+		Map<BlockNode, BlockNode> fallThroughCases = new LinkedHashMap<BlockNode, BlockNode>();
+
+		BitSet outs = new BitSet(mth.getBasicBlocks().size());
+		outs.or(block.getDomFrontier());
+		for (BlockNode s : block.getCleanSuccessors()) {
+			BitSet df = s.getDomFrontier();
+			// fall through case block
+			if (df.cardinality() > 1) {
+				if (df.cardinality() > 2) {
+					LOG.debug("Unexpected case pattern, block: {}, mth: {}", s, mth);
+				} else {
+					BlockNode first = mth.getBasicBlocks().get(df.nextSetBit(0));
+					BlockNode second = mth.getBasicBlocks().get(df.nextSetBit(first.getId() + 1));
+					if (second.getDomFrontier().get(first.getId())) {
+						fallThroughCases.put(s, second);
+						df = new BitSet(df.size());
+						df.set(first.getId());
+					} else if (first.getDomFrontier().get(second.getId())) {
+						fallThroughCases.put(s, first);
+						df = new BitSet(df.size());
+						df.set(second.getId());
+					}
 				}
 			}
-			outCount = domsOn.cardinality();
+			outs.or(df);
+		}
+		stack.push(sw);
+		stack.addExits(BlockUtils.bitSetToBlocks(mth, outs));
+
+		// check cases order if fall through case exists
+		if (!fallThroughCases.isEmpty()) {
+			if (isBadCasesOrder(blocksMap, fallThroughCases)) {
+				LOG.debug("Fixing incorrect switch cases order");
+				blocksMap = reOrderSwitchCases(blocksMap, fallThroughCases);
+				if (isBadCasesOrder(blocksMap, fallThroughCases)) {
+					LOG.error("Can't fix incorrect switch cases order, method: {}", mth);
+					mth.add(AFlag.INCONSISTENT_CODE);
+				}
+			}
 		}
 
-		BlockNode out = null;
-		if (outCount == 1) {
-			out = mth.getBasicBlocks().get(domsOn.nextSetBit(0));
-		} else if (outCount == 0) {
+		// filter 'out' block
+		if (outs.cardinality() > 1) {
+			// remove exception handlers
+			BlockUtils.cleanBitSet(mth, outs);
+		}
+		if (outs.cardinality() > 1) {
+			// filter loop start and successors of other blocks
+			List<BlockNode> blocks = mth.getBasicBlocks();
+			for (int i = outs.nextSetBit(0); i >= 0; i = outs.nextSetBit(i + 1)) {
+				BlockNode b = blocks.get(i);
+				outs.andNot(b.getDomFrontier());
+				if (b.contains(AFlag.LOOP_START)) {
+					outs.clear(b.getId());
+				} else {
+					for (BlockNode s : b.getCleanSuccessors()) {
+						outs.clear(s.getId());
+					}
+				}
+			}
+		}
+
+		if (loop != null && outs.cardinality() > 1) {
+			outs.clear(loop.getEnd().getId());
+		}
+		if (outs.cardinality() == 0) {
 			// one or several case blocks are empty,
 			// run expensive algorithm for find 'out' block
 			for (BlockNode maybeOut : block.getSuccessors()) {
@@ -696,32 +738,106 @@ public class RegionMaker {
 					}
 				}
 				if (allReached) {
-					out = maybeOut;
+					outs.set(maybeOut.getId());
 					break;
 				}
 			}
 		}
-
-		stack.push(sw);
-		if (out != null) {
+		BlockNode out = null;
+		if (outs.cardinality() == 1) {
+			out = mth.getBasicBlocks().get(outs.nextSetBit(0));
 			stack.addExit(out);
+		} else if (loop == null && outs.cardinality() > 1) {
+			LOG.warn("Can't detect out node for switch block: {} in {}", block, mth);
+		}
+		if (loop != null) {
+			// check if 'continue' must be inserted
+			BlockNode end = loop.getEnd();
+			if (out != end && out != null) {
+				insertContinueInSwitch(block, out, end);
+			}
 		}
 
 		if (!stack.containsExit(defCase)) {
 			sw.setDefaultCase(makeRegion(defCase, stack));
 		}
 		for (Entry<BlockNode, List<Object>> entry : blocksMap.entrySet()) {
-			BlockNode c = entry.getKey();
-			if (stack.containsExit(c)) {
+			BlockNode caseBlock = entry.getKey();
+			if (stack.containsExit(caseBlock)) {
 				// empty case block
 				sw.addCase(entry.getValue(), new Region(stack.peekRegion()));
 			} else {
-				sw.addCase(entry.getValue(), makeRegion(c, stack));
+				BlockNode next = fallThroughCases.get(caseBlock);
+				stack.addExit(next);
+				Region caseRegion = makeRegion(caseBlock, stack);
+				stack.removeExit(next);
+				if (next != null) {
+					next.add(AFlag.FALL_THROUGH);
+					caseRegion.add(AFlag.FALL_THROUGH);
+				}
+				sw.addCase(entry.getValue(), caseRegion);
+				// 'break' instruction will be inserted in RegionMakerVisitor.PostRegionVisitor
 			}
 		}
 
 		stack.pop();
 		return out;
+	}
+
+	private boolean isBadCasesOrder(final Map<BlockNode, List<Object>> blocksMap,
+			final Map<BlockNode, BlockNode> fallThroughCases) {
+		BlockNode nextCaseBlock = null;
+		for (BlockNode caseBlock : blocksMap.keySet()) {
+			if (nextCaseBlock != null && !caseBlock.equals(nextCaseBlock)) {
+				return true;
+			}
+			nextCaseBlock = fallThroughCases.get(caseBlock);
+		}
+		return nextCaseBlock != null;
+	}
+
+	private Map<BlockNode, List<Object>> reOrderSwitchCases(Map<BlockNode, List<Object>> blocksMap,
+			final Map<BlockNode, BlockNode> fallThroughCases) {
+		List<BlockNode> list = new ArrayList<BlockNode>(blocksMap.size());
+		list.addAll(blocksMap.keySet());
+		Collections.sort(list, new Comparator<BlockNode>() {
+			@Override
+			public int compare(BlockNode a, BlockNode b) {
+				BlockNode nextA = fallThroughCases.get(a);
+				if (nextA != null) {
+					if (b.equals(nextA)) {
+						return -1;
+					}
+				} else if (a.equals(fallThroughCases.get(b))) {
+					return 1;
+				}
+				return 0;
+			}
+		});
+
+		Map<BlockNode, List<Object>> newBlocksMap = new LinkedHashMap<BlockNode, List<Object>>(blocksMap.size());
+		for (BlockNode key : list) {
+			newBlocksMap.put(key, blocksMap.get(key));
+		}
+		return newBlocksMap;
+	}
+
+	private static void insertContinueInSwitch(BlockNode block, BlockNode out, BlockNode end) {
+		int endId = end.getId();
+		for (BlockNode s : block.getCleanSuccessors()) {
+			if (s.getDomFrontier().get(endId) && s != out) {
+				// search predecessor of loop end on path from this successor
+				List<BlockNode> list = BlockUtils.collectBlocksDominatedBy(s, s);
+				for (BlockNode p : end.getPredecessors()) {
+					if (list.contains(p)) {
+						if (p.isSynthetic()) {
+							p.getInstructions().add(new InsnNode(InsnType.CONTINUE, 0));
+						}
+						break;
+					}
+				}
+			}
+		}
 	}
 
 	public void processTryCatchBlocks(MethodNode mth) {

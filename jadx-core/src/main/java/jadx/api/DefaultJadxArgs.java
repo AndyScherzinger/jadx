@@ -38,4 +38,14 @@ public class DefaultJadxArgs implements IJadxArgs {
 	public boolean isVerbose() {
 		return false;
 	}
+
+	@Override
+	public boolean isSkipResources() {
+		return false;
+	}
+
+	@Override
+	public boolean isSkipSources() {
+		return false;
+	}
 }

@@ -9,8 +9,9 @@ import jadx.core.utils.exceptions.JadxRuntimeException;
 import javax.swing.Icon;
 import javax.swing.tree.DefaultMutableTreeNode;
 
-public abstract class JNode extends DefaultMutableTreeNode {
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
 
+public abstract class JNode extends DefaultMutableTreeNode {
 	public static JNode makeFrom(JavaNode node) {
 		if (node instanceof JavaClass) {
 			JClass p = (JClass) makeFrom(node.getDeclaringClass());
@@ -39,7 +40,21 @@ public abstract class JNode extends DefaultMutableTreeNode {
 		return null;
 	}
 
-	public abstract int getLine();
+	public String getContent() {
+		return null;
+	}
+
+	public String getSyntaxName() {
+		return SyntaxConstants.SYNTAX_STYLE_NONE;
+	}
+
+	public int getLine() {
+		return 0;
+	}
+
+	public Integer getSourceLine(int line) {
+		return null;
+	}
 
 	public abstract Icon getIcon();
 

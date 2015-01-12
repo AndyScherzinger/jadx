@@ -1,14 +1,13 @@
 package jadx.core.utils;
 
-import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.instructions.InsnType;
 import jadx.core.dex.nodes.BlockNode;
+import jadx.core.dex.nodes.IBlock;
+import jadx.core.dex.nodes.IBranchRegion;
 import jadx.core.dex.nodes.IContainer;
 import jadx.core.dex.nodes.IRegion;
 import jadx.core.dex.nodes.InsnNode;
-import jadx.core.dex.regions.SwitchRegion;
-import jadx.core.dex.regions.conditions.IfRegion;
 import jadx.core.dex.trycatch.CatchAttr;
 import jadx.core.dex.trycatch.ExceptionHandler;
 import jadx.core.dex.trycatch.TryCatchBlock;
@@ -25,10 +24,23 @@ public class RegionUtils {
 	}
 
 	public static boolean hasExitEdge(IContainer container) {
-		if (container instanceof BlockNode) {
-			BlockNode block = (BlockNode) container;
-			return !block.getSuccessors().isEmpty()
-					&& !block.contains(AFlag.RETURN);
+		if (container instanceof IBlock) {
+			InsnNode lastInsn = BlockUtils.getLastInsn((IBlock) container);
+			if (lastInsn == null) {
+				return false;
+			}
+			InsnType type = lastInsn.getType();
+			return type == InsnType.RETURN
+					|| type == InsnType.CONTINUE
+					|| type == InsnType.BREAK
+					|| type == InsnType.THROW;
+		} else if (container instanceof IBranchRegion) {
+			for (IContainer br : ((IBranchRegion) container).getBranches()) {
+				if (br == null || !hasExitEdge(br)) {
+					return false;
+				}
+			}
+			return true;
 		} else if (container instanceof IRegion) {
 			IRegion region = (IRegion) container;
 			List<IContainer> blocks = region.getSubBlocks();
@@ -39,15 +51,14 @@ public class RegionUtils {
 	}
 
 	public static InsnNode getLastInsn(IContainer container) {
-		if (container instanceof BlockNode) {
-			BlockNode block = (BlockNode) container;
+		if (container instanceof IBlock) {
+			IBlock block = (IBlock) container;
 			List<InsnNode> insnList = block.getInstructions();
 			if (insnList.isEmpty()) {
 				return null;
 			}
 			return insnList.get(insnList.size() - 1);
-		} else if (container instanceof IfRegion
-				|| container instanceof SwitchRegion) {
+		} else if (container instanceof IBranchRegion) {
 			return null;
 		} else if (container instanceof IRegion) {
 			IRegion region = (IRegion) container;
@@ -67,6 +78,8 @@ public class RegionUtils {
 	public static boolean hasExitBlock(IContainer container) {
 		if (container instanceof BlockNode) {
 			return ((BlockNode) container).getSuccessors().isEmpty();
+		} else if (container instanceof IBlock) {
+			return true;
 		} else if (container instanceof IRegion) {
 			List<IContainer> blocks = ((IRegion) container).getSubBlocks();
 			return !blocks.isEmpty()
@@ -77,8 +90,8 @@ public class RegionUtils {
 	}
 
 	public static boolean hasBreakInsn(IContainer container) {
-		if (container instanceof BlockNode) {
-			return BlockUtils.checkLastInsnType((BlockNode) container, InsnType.BREAK);
+		if (container instanceof IBlock) {
+			return BlockUtils.checkLastInsnType((IBlock) container, InsnType.BREAK);
 		} else if (container instanceof IRegion) {
 			List<IContainer> blocks = ((IRegion) container).getSubBlocks();
 			return !blocks.isEmpty()
@@ -89,8 +102,8 @@ public class RegionUtils {
 	}
 
 	public static int insnsCount(IContainer container) {
-		if (container instanceof BlockNode) {
-			return ((BlockNode) container).getInstructions().size();
+		if (container instanceof IBlock) {
+			return ((IBlock) container).getInstructions().size();
 		} else if (container instanceof IRegion) {
 			IRegion region = (IRegion) container;
 			int count = 0;
@@ -108,8 +121,8 @@ public class RegionUtils {
 	}
 
 	public static boolean notEmpty(IContainer container) {
-		if (container instanceof BlockNode) {
-			return !((BlockNode) container).getInstructions().isEmpty();
+		if (container instanceof IBlock) {
+			return !((IBlock) container).getInstructions().isEmpty();
 		} else if (container instanceof IRegion) {
 			IRegion region = (IRegion) container;
 			for (IContainer block : region.getSubBlocks()) {
@@ -123,9 +136,9 @@ public class RegionUtils {
 		}
 	}
 
-	public static void getAllRegionBlocks(IContainer container, Set<BlockNode> blocks) {
-		if (container instanceof BlockNode) {
-			blocks.add((BlockNode) container);
+	public static void getAllRegionBlocks(IContainer container, Set<IBlock> blocks) {
+		if (container instanceof IBlock) {
+			blocks.add((IBlock) container);
 		} else if (container instanceof IRegion) {
 			IRegion region = (IRegion) container;
 			for (IContainer block : region.getSubBlocks()) {
@@ -137,7 +150,7 @@ public class RegionUtils {
 	}
 
 	public static boolean isRegionContainsBlock(IContainer container, BlockNode block) {
-		if (container instanceof BlockNode) {
+		if (container instanceof IBlock) {
 			return container == block;
 		} else if (container instanceof IRegion) {
 			IRegion region = (IRegion) container;
@@ -219,6 +232,23 @@ public class RegionUtils {
 		return true;
 	}
 
+	public static IContainer getBlockContainer(IContainer container, BlockNode block) {
+		if (container instanceof IBlock) {
+			return container == block ? container : null;
+		} else if (container instanceof IRegion) {
+			IRegion region = (IRegion) container;
+			for (IContainer c : region.getSubBlocks()) {
+				IContainer res = getBlockContainer(c, block);
+				if (res != null) {
+					return res instanceof IBlock ? region : res;
+				}
+			}
+			return null;
+		} else {
+			throw new JadxRuntimeException("Unknown container type: " + container.getClass());
+		}
+	}
+
 	public static boolean isDominatedBy(BlockNode dom, IContainer cont) {
 		if (dom == cont) {
 			return true;
@@ -226,6 +256,8 @@ public class RegionUtils {
 		if (cont instanceof BlockNode) {
 			BlockNode block = (BlockNode) cont;
 			return block.isDominator(dom);
+		} else if (cont instanceof IBlock) {
+			return false;
 		} else if (cont instanceof IRegion) {
 			IRegion region = (IRegion) cont;
 			for (IContainer c : region.getSubBlocks()) {
@@ -245,6 +277,8 @@ public class RegionUtils {
 		}
 		if (cont instanceof BlockNode) {
 			return BlockUtils.isPathExists(block, (BlockNode) cont);
+		} else if (cont instanceof IBlock) {
+			return false;
 		} else if (cont instanceof IRegion) {
 			IRegion region = (IRegion) cont;
 			for (IContainer c : region.getSubBlocks()) {

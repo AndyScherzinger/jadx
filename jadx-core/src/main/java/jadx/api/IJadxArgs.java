@@ -16,4 +16,8 @@ public interface IJadxArgs {
 	boolean isShowInconsistentCode();
 
 	boolean isVerbose();
+
+	boolean isSkipResources();
+
+	boolean isSkipSources();
 }

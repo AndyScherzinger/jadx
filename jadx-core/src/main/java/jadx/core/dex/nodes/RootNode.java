@@ -1,22 +1,44 @@
 package jadx.core.dex.nodes;
 
+import jadx.api.ResourceFile;
+import jadx.api.ResourceType;
+import jadx.api.ResourcesLoader;
 import jadx.core.clsp.ClspGraph;
 import jadx.core.dex.info.ClassInfo;
 import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.utils.ErrorsCounter;
 import jadx.core.utils.exceptions.DecodeException;
+import jadx.core.utils.exceptions.JadxException;
 import jadx.core.utils.files.InputFile;
+import jadx.core.xmlgen.ResTableParser;
+import jadx.core.xmlgen.ResourceStorage;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class RootNode {
+	private static final Logger LOG = LoggerFactory.getLogger(RootNode.class);
+
 	private final Map<String, ClassNode> names = new HashMap<String, ClassNode>();
 	private final ErrorsCounter errorsCounter = new ErrorsCounter();
+
 	private List<DexNode> dexNodes;
+
+	/**
+	 * Resources *
+	 */
+	private Map<Integer, String> resourcesNames = new HashMap<Integer, String>();
+	@Nullable
+	private String appPackage;
+	private ClassNode appResClass;
 
 	public void load(List<InputFile> dexFiles) throws DecodeException {
 		dexNodes = new ArrayList<DexNode>(dexFiles.size());
@@ -47,6 +69,55 @@ public class RootNode {
 			throw new DecodeException("Error loading classpath", e);
 		}
 		initInnerClasses(classes);
+	}
+
+	public void loadResources(List<ResourceFile> resources) {
+		ResourceFile arsc = null;
+		for (ResourceFile rf : resources) {
+			if (rf.getType() == ResourceType.ARSC) {
+				arsc = rf;
+				break;
+			}
+		}
+		if (arsc == null) {
+			LOG.debug("'.arsc' file not found");
+			return;
+		}
+		final ResTableParser parser = new ResTableParser();
+		try {
+			ResourcesLoader.decodeStream(arsc, new ResourcesLoader.ResourceDecoder() {
+				@Override
+				public Object decode(long size, InputStream is) throws IOException {
+					parser.decode(is);
+					return null;
+				}
+			});
+		} catch (JadxException e) {
+			LOG.error("Failed to parse '.arsc' file", e);
+			return;
+		}
+
+		ResourceStorage resStorage = parser.getResStorage();
+		resourcesNames = resStorage.getResourcesNames();
+	}
+
+	public void initAppResClass() {
+		ClassNode resCls = null;
+		if (appPackage != null) {
+			resCls = searchClassByName(appPackage + ".R");
+		} else {
+			for (ClassNode cls : names.values()) {
+				if (cls.getShortName().equals("R")) {
+					resCls = cls;
+					break;
+				}
+			}
+		}
+		if (resCls != null) {
+			appResClass = resCls;
+			return;
+		}
+		appResClass = new ClassNode(dexNodes.get(0), ClassInfo.fromName("R"));
 	}
 
 	private static void initClassPath(List<ClassNode> classes) throws IOException, DecodeException {
@@ -104,7 +175,24 @@ public class RootNode {
 		return searchClassByName(fullName);
 	}
 
+	public List<DexNode> getDexNodes() {
+		return dexNodes;
+	}
+
 	public ErrorsCounter getErrorsCounter() {
 		return errorsCounter;
+	}
+
+	public Map<Integer, String> getResourcesNames() {
+		return resourcesNames;
+	}
+
+	@Nullable
+	public String getAppPackage() {
+		return appPackage;
+	}
+
+	public ClassNode getAppResClass() {
+		return appResClass;
 	}
 }

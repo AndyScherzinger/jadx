@@ -2,6 +2,7 @@ package jadx.api;
 
 import jadx.core.Jadx;
 import jadx.core.ProcessClass;
+import jadx.core.codegen.CodeWriter;
 import jadx.core.dex.info.ClassInfo;
 import jadx.core.dex.nodes.ClassNode;
 import jadx.core.dex.nodes.RootNode;
@@ -11,6 +12,7 @@ import jadx.core.utils.exceptions.DecodeException;
 import jadx.core.utils.exceptions.JadxException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 import jadx.core.utils.files.InputFile;
+import jadx.core.xmlgen.BinaryXMLParser;
 
 import java.io.File;
 import java.io.IOException;
@@ -54,6 +56,9 @@ public final class JadxDecompiler {
 	private RootNode root;
 	private List<IDexTreeVisitor> passes;
 	private List<JavaClass> classes;
+	private List<ResourceFile> resources;
+
+	private BinaryXMLParser xmlParser;
 
 	public JadxDecompiler() {
 		this(new DefaultJadxArgs());
@@ -81,6 +86,8 @@ public final class JadxDecompiler {
 	void reset() {
 		ClassInfo.clearCache();
 		classes = null;
+		resources = null;
+		xmlParser = null;
 		root = null;
 	}
 
@@ -108,8 +115,20 @@ public final class JadxDecompiler {
 	}
 
 	public void save() {
+		save(!args.isSkipSources(), !args.isSkipResources());
+	}
+
+	public void saveSources() {
+		save(true, false);
+	}
+
+	public void saveResources() {
+		save(false, true);
+	}
+
+	private void save(boolean saveSources, boolean saveResources) {
 		try {
-			ExecutorService ex = getSaveExecutor();
+			ExecutorService ex = getSaveExecutor(saveSources, saveResources);
 			ex.shutdown();
 			ex.awaitTermination(1, TimeUnit.DAYS);
 		} catch (InterruptedException e) {
@@ -118,6 +137,10 @@ public final class JadxDecompiler {
 	}
 
 	public ExecutorService getSaveExecutor() {
+		return getSaveExecutor(!args.isSkipSources(), !args.isSkipResources());
+	}
+
+	private ExecutorService getSaveExecutor(boolean saveSources, boolean saveResources) {
 		if (root == null) {
 			throw new JadxRuntimeException("No loaded files");
 		}
@@ -126,14 +149,31 @@ public final class JadxDecompiler {
 
 		LOG.info("processing ...");
 		ExecutorService executor = Executors.newFixedThreadPool(threadsCount);
-		for (final JavaClass cls : getClasses()) {
-			executor.execute(new Runnable() {
-				@Override
-				public void run() {
-					cls.decompile();
-					SaveCode.save(outDir, args, cls.getClassNode());
-				}
-			});
+		if (saveSources) {
+			for (final JavaClass cls : getClasses()) {
+				executor.execute(new Runnable() {
+					@Override
+					public void run() {
+						cls.decompile();
+						SaveCode.save(outDir, args, cls.getClassNode());
+					}
+				});
+			}
+		}
+		if (saveResources) {
+			for (final ResourceFile resourceFile : getResources()) {
+				executor.execute(new Runnable() {
+					@Override
+					public void run() {
+						if (ResourceType.isSupportedForUnpack(resourceFile.getType())) {
+							CodeWriter cw = resourceFile.getContent();
+							if (cw != null) {
+								cw.save(new File(outDir, resourceFile.getName()));
+							}
+						}
+					}
+				});
+			}
 		}
 		return executor;
 	}
@@ -151,6 +191,16 @@ public final class JadxDecompiler {
 			classes = Collections.unmodifiableList(clsList);
 		}
 		return classes;
+	}
+
+	public List<ResourceFile> getResources() {
+		if (resources == null) {
+			if (root == null) {
+				return Collections.emptyList();
+			}
+			resources = new ResourcesLoader(this).load(inputFiles);
+		}
+		return resources;
 	}
 
 	public List<JavaPackage> getPackages() {
@@ -203,6 +253,8 @@ public final class JadxDecompiler {
 		root = new RootNode();
 		LOG.info("loading ...");
 		root.load(inputFiles);
+		root.loadResources(getResources());
+		root.initAppResClass();
 	}
 
 	void processClass(ClassNode cls) {
@@ -211,6 +263,13 @@ public final class JadxDecompiler {
 
 	RootNode getRoot() {
 		return root;
+	}
+
+	BinaryXMLParser getXmlParser() {
+		if (xmlParser == null) {
+			xmlParser = new BinaryXMLParser(root);
+		}
+		return xmlParser;
 	}
 
 	JavaClass findJavaClass(ClassNode cls) {

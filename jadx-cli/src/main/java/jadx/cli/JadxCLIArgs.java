@@ -32,6 +32,12 @@ public final class JadxCLIArgs implements IJadxArgs {
 	@Parameter(names = {"-f", "--fallback"}, description = "make simple dump (using goto instead of 'if', 'for', etc)")
 	protected boolean fallbackMode = false;
 
+	@Parameter(names = {"-r", "--no-res"}, description = "do not decode resources")
+	protected boolean skipResources = false;
+
+	@Parameter(names = {"-s", "--no-src"}, description = "do not decompile source code")
+	protected boolean skipSources = false;
+
 	@Parameter(names = {"--show-bad-code"}, description = "show inconsistent code (incorrectly decompiled)")
 	protected boolean showInconsistentCode = false;
 
@@ -162,6 +168,16 @@ public final class JadxCLIArgs implements IJadxArgs {
 
 	public boolean isPrintHelp() {
 		return printHelp;
+	}
+
+	@Override
+	public boolean isSkipResources() {
+		return skipResources;
+	}
+
+	@Override
+	public boolean isSkipSources() {
+		return skipSources;
 	}
 
 	@Override
